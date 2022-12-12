@@ -1,0 +1,752 @@
+---
+title: "Stats101c_FinalProject_CarAccident"
+author: "Proud Jiao"
+date: '2022-11-04'
+output: pdf_document
+---
+
+# 1 Executive Summary
+
+# 2 Introduction
+
+# 3 Loading and Exploring Data
+
+## 3.1 Load data and libraries
+```{r}
+library(ggplot2)
+library(gridExtra) # For gridding graphs
+library(dplyr)
+train <- read.csv("Acctrain.csv")
+test <- read.csv("AcctestNoY.csv")
+Y.train <- train$Severity
+Y.train.toNum <- as.numeric(Y.train=="SEVERE")
+```
+
+## 3.2 Data size and structures
+
+```{r}
+dim(train)
+dim(test)
+```
+
+Training set dimension is `{r} dim(train)` (row col)
+
+Testing set dimension is `{r} dim(test)` (row col)
+
+### 3.2.1 How many numerical predictors does your data have? List them.
+
+```{r}
+is_numPred <- rep(NA, ncol(test)) 
+for (i in 1:ncol(test)){
+  if(typeof(test[,i])=="double" || typeof(test[,i])=="integer"){ 
+    is_numPred[i] <- TRUE
+  } else{
+    is_numPred[i] <- FALSE
+  } 
+}
+sum(is_numPred) # there are 11 numerical predictors
+```
+
+```{r}
+colnames(test)[is_numPred]
+```
+
+### 3.2.2 How many categorical predictors does your data have? List them.
+
+```{r}
+is_catPred <- rep(NA, ncol(test)) 
+for (i in 1:ncol(test)){
+  if(typeof(test[,i])=="logical" || typeof(test[,i])=="character"){ 
+    is_catPred[i] <- TRUE
+  } else{
+    is_catPred[i] <- FALSE
+  } 
+}
+sum(is_catPred) # there are 11 numerical predictors
+```
+
+```{r}
+colnames(test)[is_catPred]
+```
+
+# 4 Exploring most important parameters
+
+## Response Variable
+
+```{r}
+barplot(table(train$Severity))
+```
+
+A model of accuracy rate higher than `r table(train$Severity)[1]/sum(table(train$Severity))` is good
+
+## Examine Severe Cases
+
+```{r}
+Severe_case <- train %>% filter(Severity=="SEVERE")
+head(Severe_case)
+```
+
+## Deal with and Combine Start and Ending time
+
+The T is just a literal to separate the date from the time, and the Z means “zero hour offset” also known as “Zulu time” (UTC). Since Start time and End time heavily depend on each other, we can summarize them into a stat called Duration. 
+
+```{r}
+Start_Time.timestamp <- strptime(train$Start_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+End_Time.timestamp <- strptime(train$End_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+train$Duration <- difftime(End_Time.timestamp, Start_Time.timestamp, units = "mins")
+quantile(train$Duration)
+```
+
+1298444.600 mins is probably an unreasonable duration time. Let's examine extreme duration (accidents that lasted over a day).
+
+```{r}
+accidents_over_a_day <- train[which(train$Duration >= 24*60),]
+accidents_under_a_day <- train[which(train$Duration < 24*60),]
+sum(accidents_over_a_day$Severity=="SEVERE")/nrow(accidents_over_a_day)
+```
+
+
+```{r}
+ggplot(train, aes(x=Duration)) + geom_histogram()
+```
+
+Distribution of Duration is very right skewed, let's consider log(Duration) to better visualize the relationship between Severity and Duration
+
+
+```{r}
+desnity_plots_by_Severity<- ggplot(train, aes((log(as.integer(Duration))),color=Severity))+geom_density()
+desnity_plots_by_Severity
+```
+
+duration seems to be a good predictor that separates Severe cases from Mild cases.
+
+## Does whether accidents take place in before sunset and after sunset matters?
+
+
+Important question: What does nautical light mean? Is it the same as whether it's sunlight or not?
+```{r}
+hourOfAccident <- as.integer(format(as.POSIXct(Start_Time.timestamp), format = "%H"))
+train$hourOfAccident <- as.factor(hourOfAccident)
+train$isNight <- ifelse(hourOfAccident > 19 | hourOfAccident < 6, 1, 0)
+train <- train %>%
+  group_by(hourOfAccident) %>%
+  mutate(percent_Severity = (Severity=="SEVERE") / length(Severity) * 100)
+```
+
+
+
+
+
+# 5 deal with missing values
+
+
+## 5.1 MICE
+```{r}
+missing_cell.train <- sum(is.na(train))
+tot_cell.train <- nrow(train)*ncol(train)
+missing_cell.test <- sum(is.na(test))
+tot_cell.test <- nrow(test)*ncol(test)
+cat(" Number of missing values in Training set :", missing_cell.train, '\n',
+    "Proportion of missing values in Training set :", missing_cell.train/tot_cell.train, '\n',
+    "Number of missing values in Testing set :", missing_cell.test, '\n',
+    "Proportion of missing values in Testing set :", missing_cell.test/tot_cell.test  , '\n')
+```
+
+```{r}
+apply(train, 2, function(x){
+  sum(is.na(x))
+  })
+```
+
+
+
+
+
+
+
+
+
+## XGBoost
+
+```{r}
+# install.packages("xgboost")
+library(xgboost)
+require(xgboost)
+train <- read.csv("Acctrain.csv")
+test <- read.csv("AcctestNoY.csv")
+```
+
+```{r}
+# replace NA zipcode with longitude and latitude
+require(terra)
+require(zipcodeR)
+library(zipcodeR)
+Zipcode.NAIndex.train<- which(is.na(train$Zipcode))
+train$Zipcode <- as.integer(gsub('-....','',train$Zipcode))
+# for (i in Zipcode.NAIndex.train){
+#   train$Zipcode[i] <- search_radius(train$Start_Lat[i], train$Start_Lng[i], radius = 10)[1]
+# }
+# train[Zipcode.NAIndex.train,]
+Zipcode.NAIndex.test<- which(is.na(test$Zipcode))
+# for (i in Zipcode.NAIndex.test){
+#   test$Zipcode[i] <- search_radius(test$Start_Lat[i], test$Start_Lng[i], radius = 10)[1]
+# }
+
+# if longitude and latitude is not associated with a zipcode, use KNN to replace the zipcode with the nearest one # replace NA zipcode using closest neighbors of latitude and longitude 
+#remotes::install_github("cran/DMwR")
+library(DMwR)
+require(DMwR)
+knnImputation(train[,c(4,5,6,7,15)], k = 1, distData = NULL)
+
+require(tidyverse)
+## population size by zipcode # data from 2022 US census 
+uszips <- read.csv("uszips.csv") %>% 
+  select(c(zip, population, density))
+train.withPopAndDen <- train %>% 
+  left_join(uszips, by =c("Zipcode" = "zip"))
+train.withPopDenDesLen <- train.withPopAndDen %>% 
+  mutate(Description_length = str_count(train$Description, " "))
+
+#### Description word count doesn't seem to be a good predictor ########
+# library(GGally)
+# ggpairs(train.withPopDenDesLen[,c("Description_length", "Severity")], )
+
+test$Zipcode <- as.integer(gsub('-....','',test$Zipcode))
+test.withPopAndDen <- test %>% 
+  left_join(uszips, by =c("Zipcode" = "zip"))
+test.withPopDenDesLen <- test.withPopAndDen %>% mutate(Description_length = length(Description))
+```
+
+
+## MICE
+
+```{r}
+# 1 iteration of mice reduces train 13000 nas to 2500 nas
+library(mice)
+require(ranger)
+train.miced <- mice(train.withPopDenDesLen,m=5,maxit=0,meth='rf',seed=500)
+train.miced <- complete(train.miced,1)
+sum(is.na(train.miced))
+
+apply(train.miced, 2, function(x){
+  sum(is.na(x))
+  })
+
+# get rid of timestamp, wind direction, weather condition b/c not important
+train.miced <- train.miced %>% select(!c(Airport_Code, Weather_Timestamp, Wind_Direction))
+
+# do the same for test data
+test.miced <- mice(test.withPopDenDesLen,m=5,maxit=0,meth='rf',seed=500)
+test.miced <- complete(test.miced,1)
+sum(is.na(test.miced))
+
+test.miced <- test.miced %>% select(!c(Airport_Code, Weather_Timestamp, Wind_Direction))
+
+apply(train.miced, 2, function(x){
+  sum(is.na(x))
+  })
+```
+
+# 6 Deal with description
+
+```{r}
+library(tidyverse)
+# generated 8 new variables using keywords
+pattern <- tolower(c("road closed due to accident", "at 104th ave/exit 221", "Slow traffic", "Road closed", "caution", "Stationary traffic", "closed due to accident", "minimum delays"))
+train.miced$Description <- tolower(train.miced$Description)
+train.miced$Description %>% str_detect(pattern[1])
+for (i in 1:length(pattern)){
+    varname <- paste("has_keyword", i , sep=".")
+    train.miced[[varname]] <- with(train.miced, train.miced$Description %>% str_detect(pattern[i]))
+}
+
+test.miced$Description <- tolower(test.miced$Description)
+test.miced$Description %>% str_detect(pattern[1])
+for (i in 1:length(pattern)){
+    varname <- paste("has_keyword", i , sep=".")
+    test.miced[[varname]] <- with(test.miced, test.miced$Description %>% str_detect(pattern[i]))
+}
+```
+
+## Textmining 
+
+### WordCloud
+
+Visualize most frequent words
+
+```{r}
+# install.packages("janeaustenr")
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+library(tidytext)
+
+
+# install.packages("wordcloud")
+require(wordcloud)
+```
+
+### Sentiment Analysis
+
+```{r}
+# install.packages("tidytext")
+require(tidytext)
+
+description_book <- train.miced %>% 
+  unnest_tokens(word, Description)
+
+
+#### commented this part out because text mining severity unimportant 
+# description_sentiment <- description_book %>%
+#   inner_join(get_sentiments("bing")) %>%
+#   count(Start_Lat, sentiment) %>%
+#   pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+#   mutate(sentiment = positive - negative)
+# 
+# train.miced.withSent <- train.miced %>% left_join(description_sentiment)
+# train.miced.withSent$sentiment[which(is.na(train.miced.withSent$sentiment))] <- 0
+# 
+# train.miced$Sentiment <- train.miced.withSent$sentiment
+
+
+# look at frequent words in Severe and frequent words in Mild
+
+Mild_scorebook <- train.miced[train.miced$Severity=="MILD",] %>%
+  unnest_tokens(word, Description) %>% 
+  count(word, sort = TRUE) %>% 
+  mutate(n = n*1000/sum(n)) %>% 
+  rename(score_mild = n)
+
+Severe_scorebook <- train.miced[train.miced$Severity!="MILD",] %>%
+  unnest_tokens(word, Description) %>% 
+  count(word, sort = TRUE) %>% 
+  mutate(n = n*1000/sum(n)) %>% 
+  rename(score_severe = n)
+
+Mild_Severe_scorebook <- Mild_scorebook %>% 
+  full_join(Severe_scorebook, by = "word") %>% 
+  replace_na(list(score_mild = 0, score_severe = 0)) %>% 
+  mutate(severe_score = score_severe-score_mild) %>% 
+  select(word, severe_score)
+
+Mild_severe_sentiment <- description_book %>%
+  left_join(Mild_Severe_scorebook, by = "word") %>% 
+  group_by(Start_Lat) %>% 
+  summarise(
+    severity_score = sum(severe_score)
+  )
+
+train.miced <-  train.miced %>% 
+  left_join(Mild_severe_sentiment, by = "Start_Lat") %>% 
+  replace_na(list(severity_score = 0))
+```
+
+
+```{r}
+length(train.miced$Severity)
+length(train.miced$severity_score)
+sum(is.na(train.miced$severity_score))
+
+boxplot(train.miced$severity_score~train.miced$Severity, main = "Severity by severity score", ylab = "severity score")
+
+library(ggplot2)
+ggplot(train.miced, aes(x=Severity, y=severity_score)) +
+  geom_boxplot(outlier.shape=1) +
+  labs(x="Severity", y="severity score") +
+  ggtitle("Severity by severity score") +
+  theme_minimal()
+```
+
+
+### Tracy's Approach
+
+```{r}
+train.miced$Description<-tolower(train.miced$Description)
+data.tracy<-train.miced%>%mutate(across(where(is.character), str_remove_all, pattern = fixed(" ")))
+keysevere <- c("roadclosed", "closedduetoaccident")
+severeword<-'closedduetoaccident|at104thave/exit221'
+keymild <- c("slowtraffic", "caution", "stationarytraffic", "expectdelays", "rotationrequestcomment", "disabledvehicle", "hazard", "queuingtraffic", "debris", "conndot", "minimumdelays")
+mildword<-'slowtraffic|caution|stationarytraffic|expectdelays|rotationrequestcomment|disabledvehicle|hazard|queuingtraffic|debris|conndot|minimumdelays|problemchangedfrom|whiteln|boronda|inglewood|or-62'
+data.tracy<-data.tracy %>% mutate(DetectSevere=str_detect(data.tracy$Description, severeword))
+data.tracy<-data.tracy%>% mutate(DetectMild=str_detect(data.tracy$Description, mildword))
+data.tracy<-data.tracy%>% mutate(DetectSevere_num=ifelse(DetectSevere==T,1,0))
+data.tracy<-data.tracy%>% mutate(DetectMild_num=ifelse(DetectMild==T,1,0))
+
+train.miced$DetectSevere <- data.tracy$DetectSevere_num
+train.miced$DetectMild <- data.tracy$DetectMild_num
+```
+
+## Duration
+
+
+
+
+
+```{r}
+# add Duration from Starttime and endtime
+Start_Time.timestamp <- strptime(train.miced$Start_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+End_Time.timestamp <- strptime(train.miced$End_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+train.miced$Duration <- difftime(End_Time.timestamp, Start_Time.timestamp, units = "mins")
+
+# Add hours of accident and IsNight predictors
+hourOfAccident.train <- as.integer(format(as.POSIXct(Start_Time.timestamp), format = "%H"))
+
+# add year and month predictor
+
+year.train <- Start_Time.timestamp %>% substr(1,4) %>% as.factor()
+table(year.train, train.miced$Severity)
+plot(table(year.train, train.miced$Severity))
+
+# we can tell that from 2016 to 2018, ratio is about 2 to 1, where as the ratio of mild to Severe has grown much higher since. Thus we choose 4 levels: is_2016_2018, is_2019, is_2020, is_2021
+
+train.miced$is_2016_2018 <- year.train %in% 2016:2018
+train.miced$is_2019 <- year.train == 2019
+train.miced$is_2020 <- year.train == 2020
+train.miced$is_2021 <- year.train == 2021
+sum(train.miced$is_2016_2018, train.miced$is_2019, train.miced$is_2020, train.miced$is_2021)
+
+
+month.train <- Start_Time.timestamp %>% substr(6,7) %>% as.factor()
+tab1 <- table(month.train, train.miced$Severity)
+plot(tab1)
+severity_rate_by_month <- tab1[,2]/(tab1[,1]+tab1[,2])
+barplot(severity_rate_by_month, xlab = "month", ylab = "severity rate", main = "severity_rate_by_month")
+```
+
+
+```{r}
+train.miced$is_may <- as.integer(month.train) == 5
+train.miced$is_June_Apri <- as.integer(month.train) %in% c(4,6)
+train.miced$is_Mar <- as.integer(month.train) == 3
+train.miced$is_Jul_Aug <- as.integer(month.train) %in% c(7,8)
+train.miced$is_Jan_Feb <- as.integer(month.train) %in% c(1,2)
+train.miced$is_Sep_Oct_Nov_Dec <- as.integer(month.train) %in% c(9,10, 11, 12)
+```
+
+```{r}
+# train.miced$hourOfAccident <- as.factor(hourOfAccident.test)
+train.miced$isNight <- ifelse(hourOfAccident.train > 18 | hourOfAccident.train < 6, 1, 0)
+train.miced <- train.miced %>% select(!c(Start_Time, End_Time))
+plot(table(train.miced$isNight, train.miced$Severity)) # weak predictor
+
+
+# Add duration to miced test
+Start_Time.timestamp.test <- strptime(test$Start_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+End_Time.timestamp.test <- strptime(test$End_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+test.miced$Duration <- difftime(End_Time.timestamp.test, Start_Time.timestamp.test, units = "mins")
+
+# Add hours of accident and IsNight predictors
+hourOfAccident.test <- as.integer(format(as.POSIXct(Start_Time.timestamp.test), format = "%H"))
+# test.miced$hourOfAccident <- as.factor(hourOfAccident.test)
+test.miced$isNight <- ifelse(hourOfAccident.test > 18 | hourOfAccident.test < 6, 1, 0)
+test.miced <- test.miced %>% select(!c(Start_Time, End_Time))
+```
+
+## investigate if on weekends there are more severe car crashes
+
+```{r}
+require(lubridate)
+train.miced$on_weekend <- wday(Start_Time.timestamp) %in% c(1,7)
+plot(table(train.miced$on_weekend, train.miced$Severity))
+```
+## investigate if snow or rain or thunder day has effect (YES IT DOES)
+
+```{r}
+snow_or_rain <- train$Weather_Condition %>% tolower() %>% str_detect("rain|snow|heavy|thunder")
+
+plot(table(snow_or_rain, train$Severity))
+```
+
+## investigate if being in CA or FL matters (YES it DOEs)
+
+```{r}
+train.miced$in_CA_FL <- train.miced$State %in% c("CA", "FL")
+plot(table(train.miced$in_CA_FL, train.miced$Severity))
+```
+
+## investigate if timezone matters (YES it DOEs)
+
+```{r}
+plot(table(train$Timezone, train$Severity))
+```
+
+## decide important vectors
+
+
+```{r}
+require(randomForest)
+train.miced.omit <- na.omit(train.miced)
+Y.train.omit <- as.factor(train.miced.omit$Severity)
+## Find important subset using Random Forest Modelling 
+model <- randomForest(Y.train.omit ~ ., 
+                          data = train.miced.omit %>% select(!c(Severity, Street, Side, City, County, State, Country)), importance=TRUE) 
+#Conditional=True, adjusts for correlations between predictors.
+require(caret)
+i_scores <- varImp(model, proportions=TRUE)
+important_predictors <- rownames(i_scores[which(i_scores$MILD >= 3),])
+varImpPlot(model, n.var=10)
+?varImpPlot
+```
+
+
+
+
+```{r}
+######## convert data to xgboost matrix ##########
+
+chosen_predictor_set_1 <- c("Start_Lat", "Start_Lng", "End_Lat", "End_Lng", "Distance.mi.", "Zipcode", "Temperature.F.", "Wind_Chill.F.", "Humidity...", "Pressure.in.",
+"Visibility.mi.", "Wind_Speed.mph.", "Amenity", "Bump", "Crossing", "Give_Way", "Junction", "No_Exit", "Railway", "Roundabout", "Station", "Stop", "Traffic_Calming", "Traffic_Signal", "Turning_Loop", "Sunrise_Sunset", "Civil_Twilight", "Nautical_Twilight", "Astronomical_Twilight", "Duration", "isNight", "has_keyword.1", "has_keyword.2", "has_keyword.3", "has_keyword.4", "has_keyword.5", "has_keyword.6", "has_keyword.7", "has_keyword.8", "population", "density", "Description_length")
+
+# set 2 only chooses important predictors
+chosen_predictor_set_2 <- c(important_predictors)
+
+chosen_predictor_set_3 <- c("DetectSevere", "DetectMild", "Pressure.in.","Distance.mi.","Duration","population", "density", "isNight", "Astronomical_Twilight", "Wind_Speed.mph", "Wind_Chill.F.", "Temperature.F", "Junction", "Traffic_Signal", "Crossing")
+
+chosen_predictor_set_4 <- c("Duration", "Crossing")
+
+# 5 is important predictors above 8 mannually selected
+chosen_predictor_set_5 <- c("Distance.mi.", "Temperature.F.", "Wind_Chill.F.", "Humidity...", "Pressure.in.", "Civil_Twilight", "Nautical_Twilight", "Astronomical_Twilight", "population", "density" , "Description_length", "severity_score", "DetectSevere", "DetectMild", "Duration", "is_2016_2018", "is_2020", "is_2021", "isNight", "is_may", "is_June_Apri", "is_Mar")
+
+# 5 is important predictors above 5 mannually selected
+chosen_predictor_set_6 <- c(chosen_predictor_set_5, "Traffic_Signal", "Sunrise_Sunset", "has_keyword.1", "has_keyword.4", "has_keyword.7", "is_2019", "is_Sep_Oct_Nov_Dec")
+
+chosen_predictor_set_7 <- c(chosen_predictor_set_5, "Start_Lat", "Start_Lng", "End_Lat", "End_Lng")
+using_set <- chosen_predictor_set_2
+```
+
+
+
+```{r}
+
+## only select non-character columns
+train.xgboost <- train.miced[,using_set]
+train.xgboost.matrix <- data.matrix(train.xgboost)
+
+## testing setting
+# for (depth in seq(6, 6, 2)){
+#   cat("depth setting: ", depth, "\n")
+#   xgboost.model <- xgboost(data = train.xgboost.matrix, label = Y.train, max.depth = depth, eta = 0.1, nthread = 2, nrounds = 50, objective = "binary:logistic")
+#   pred <- predict(xgboost.model, train.xgboost.matrix)
+#   for (thres in seq(0.2,0.5,0.04)){
+#     Y.predicted <- ifelse(pred > thres, 1, 0)
+#     cat("Thres: ",  thres, " Acc rate: ", mean(Y.predicted == Y.train), "\n")
+#   }  
+# }
+# ?xgboost
+
+```
+
+
+## CV XGboost
+
+
+
+```{r}
+library(xgboost)
+# Perform cross validation with a 'strict' early_stopping
+
+cv <- xgb.cv(data = train.xgboost.matrix, label = Y.train.toNum, nfold = 10, max_depth = 8,
+             eta = 0.2, nrounds = 100, objective = "binary:logistic",
+             prediction = TRUE, early_stopping_rounds = 1, importance=T)
+cat("Acc rate: ", mean(ifelse(cv$pred > 0.5, 1, 0) == Y.train.toNum), "\n")
+
+# nfold = 20, max_depth = 3, eta = 0.3, nrounds = 50: test logloss 0.166
+# nfold = 20, max_depth = 3, eta = 0.3, nrounds = 30: test logloss 0.161
+
+
+```
+## best setting
+
+```{r}
+best.learningRate <- 0.02
+best.depth <- 7
+best.iteration <- 500
+xgboost.model.best <- xgboost(data = train.xgboost.matrix, label = Y.train.toNum, max.depth = best.depth, eta = best.learningRate, nrounds = best.iteration, objective = "binary:logistic")
+best.thres <- 0.5
+```
+
+## varImp
+
+```{r}
+library(caret)
+```
+
+
+## predicting using xgboost
+
+### test: fill NA
+```{r}
+
+# Add duration to miced test
+Start_Time.timestamp.test <- strptime(test$Start_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+End_Time.timestamp.test <- strptime(test$End_Time, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+test.miced$Duration <- difftime(End_Time.timestamp.test, Start_Time.timestamp.test, units = "mins")
+
+# Add hours of accident and IsNight predictors
+hourOfAccident.test <- as.integer(format(as.POSIXct(Start_Time.timestamp.test), format = "%H"))
+test.miced$hourOfAccident <- as.factor(hourOfAccident.test)
+test.miced$isNight <- ifelse(hourOfAccident.test > 19 | hourOfAccident.test < 6, 1, 0)
+
+# add year and month predictor
+
+year.test <- Start_Time.timestamp.test %>% substr(1,4) %>% as.factor()
+test.miced$is_2016_2018 <- year.test %in% 2016:2018
+test.miced$is_2019 <- year.test == 2019
+test.miced$is_2020 <- year.test == 2020
+test.miced$is_2021 <- year.test == 2021
+sum(test.miced$is_2016_2018, test.miced$is_2019, test.miced$is_2020, test.miced$is_2021)
+
+month.test <- Start_Time.timestamp.test %>% substr(6,7) %>% as.factor()
+```
+
+```{r}
+test.miced$is_may <- as.integer(month.test) == 5
+test.miced$is_June_Apri <- as.integer(month.test) %in% c(4,6)
+test.miced$is_Mar <- as.integer(month.test) == 3
+test.miced$is_Jul_Aug <- as.integer(month.test) %in% c(7,8)
+test.miced$is_Jan_Feb <- as.integer(month.test) %in% c(1,2)
+test.miced$is_Sep_Oct_Nov_Dec <- as.integer(month.test) %in% c(9,10, 11, 12)
+
+
+# Add missing Zipcode
+test.miced$Zipcode <- as.numeric(gsub('-....','',test.miced$Zipcode))
+knnImputation(test.miced[,(c("Start_Lat","Start_Lng","End_Lat","End_Lng", "Zipcode"))], k = 1, distData = NULL)
+test.miced$Zipcode <- as.factor(test.miced$Zipcode)
+
+# add keyword predictors
+test.miced$Description <- tolower(test.miced$Description)
+for (i in 1:length(pattern)){
+    varname <- paste("has_keyword", i , sep=".")
+    test.miced[[varname]] <- with(test.miced, test.miced$Description %>% str_detect(pattern[i]))
+}
+
+# add on weekend
+test.miced$on_weekend <- wday(Start_Time.timestamp.test) %in% c(1,7)
+
+# add snow or rain
+snow_or_rain <- test$Weather_Condition %>% tolower() %>% str_detect("rain|snow|heavy|thunder")
+
+# add in CA or FL
+test.miced$in_CA_FL <- test.miced$State %in% c("CA", "FL")
+
+
+# add Tracy's Mild/Severe Index
+
+
+test.miced$Description<-tolower(test.miced$Description)
+data.tracy<-test.miced%>%mutate(across(where(is.character), str_remove_all, pattern = fixed(" ")))
+keysevere <- c("roadclosed", "closedduetoaccident")
+severeword<-'closedduetoaccident|at104thave/exit221'
+keymild <- c("slowtraffic", "caution", "stationarytraffic", "expectdelays", "rotationrequestcomment", "disabledvehicle", "hazard", "queuingtraffic", "debris", "conndot", "minimumdelays")
+mildword<-'slowtraffic|caution|stationarytraffic|expectdelays|rotationrequestcomment|disabledvehicle|hazard|queuingtraffic|debris|conndot|minimumdelays|problemchangedfrom|whiteln|boronda|inglewood|or-62'
+data.tracy<-data.tracy %>% mutate(DetectSevere=str_detect(data.tracy$Description, severeword))
+data.tracy<-data.tracy%>% mutate(DetectMild=str_detect(data.tracy$Description, mildword))
+data.tracy<-data.tracy%>% mutate(DetectSevere_num=ifelse(DetectSevere==T,1,0))
+data.tracy<-data.tracy%>% mutate(DetectMild_num=ifelse(DetectMild==T,1,0))
+
+test.miced$DetectSevere <- data.tracy$DetectSevere_num
+test.miced$DetectMild <- data.tracy$DetectMild_num
+
+# Add Sentiment Index
+
+description_book <- test.miced %>%
+  unnest_tokens(word, Description)
+
+description_sentiment <- description_book %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(Start_Lat, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+test.miced.withSent <- test.miced %>% left_join(description_sentiment)
+test.miced.withSent$sentiment[which(is.na(test.miced.withSent$sentiment))] <- 0
+
+test.miced$Sentiment <- test.miced.withSent$sentiment
+
+# add severe_scores
+Mild_severe_sentiment <- description_book %>%
+  left_join(Mild_Severe_scorebook, by = "word") %>% 
+  group_by(Start_Lat) %>% 
+  summarise(
+    severity_score = sum(severe_score)
+  )
+
+test.miced <-  test.miced %>% 
+  left_join(Mild_severe_sentiment, by = "Start_Lat") %>% 
+  replace_na(list(severity_score = 0))
+
+# convert test.miced to matrix
+using_set[!(using_set %in% colnames(test.miced))]
+test.xgboost <- test.miced[,using_set]
+test.xgboost.matrix <- data.matrix(test.xgboost)
+
+# predict
+pred.final <- predict(xgboost.model.best, test.xgboost.matrix)
+pred.final <- ifelse(pred.final > best.thres, 1, 0)
+```
+
+Write output to csv files
+
+```{r}
+df <- data.frame(Ob = seq(length(pred.final)),
+                 Severity = ifelse(pred.final==0, "MILD", "SEVERE")
+                 )
+write.csv(df,"/Users/aoproudjiao/Desktop/College/2022-2023/Y3Q1/stats101c/xgboost.csv", row.names = FALSE)
+```
+
+
+
+## GAM Failed Attempt
+
+```{r}
+library(gam)
+# install.packages("future")
+library(caret)
+
+b <- train(Y.train~Duration+Distance.mi. + Temperature.F. +Wind_Chill.F.+Humidity... + Pressure.in. + Wind_Speed.mph.+Amenity+Bump+Crossing+Give_Way+Junction+No_Exit+Railway+Roundabout+Station+Stop, 
+           data=train.miced,
+        method = "gam",
+        trControl = trainControl(method = "cv", number = 10),
+)
+
+train.miced$Duration <- as.numeric(train.miced$Duration)
+gam.model <- gam(Y.train.toNum~s(End_Lng)+s(Duration), family= binomial,data=cbind(train.miced, Y.train.toNum))
+?gam
+# +s(Distance.mi., 10) + s(Temperature.F., 10) +s(Wind_Chill.F., 10)+s(Humidity..., 10) + s(Pressure.in., 10) + s(Wind_Speed.mph., 10)+Amenity+Bump+Crossing+Give_Way+Junction+No_Exit+Railway+Roundabout+Station+Stop
+
+
+# summary(gam.best)
+par(mfrow=c(3,3))
+plot(gam.model, se=TRUE,col="blue")
+```
+
+## random forest
+
+```{r}
+library(randomForest)
+library(caret)
+
+# Define the control
+trControl <- trainControl(method = "cv",
+    number = 10,
+    search = "grid")
+
+caret::train(as.factor(Y.train)~., train.xgboost.matrix, method = "rf", trControl = trainControl(), tuneGrid = NULL, na.action= na.omit)
+
+```
+
+
+## GBM
+
+```{r}
+install.packages("gbm")
+library(gbm)
+
+gbmCrossVal(cv.folds = 10, data = train.xgboost.matrix, Y.train.toNum~., distribution = "bernouille", n.trees = 10, nTrain = 10)
+?gbmCrossVal
+```
+
+
+
+
+
