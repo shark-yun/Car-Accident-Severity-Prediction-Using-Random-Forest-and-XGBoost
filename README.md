@@ -36,4 +36,4 @@ score of 0.9435.
 
 [View R code](RCode_CarAccidents.Rmd)
 
-[View Report](report.pdf)
+[View Report](SeverityofCarAccident.pdf)
