@@ -1,6 +1,6 @@
 ---
 title: "Stats101c_FinalProject_CarAccident"
-author: "Proud Jiao"
+author: "Proud Jiao, Yun Lin"
 date: '2022-11-04'
 output: pdf_document
 ---
