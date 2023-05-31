@@ -34,6 +34,11 @@ and recommendations. The final model is based on
 random forest and uses 65 variables. It has accuracy
 score of 0.9435.
 
+## More
+
 [View R code](RCode_CarAccidents.Rmd)
 
 [View Report](SeverityofCarAccident.pdf)
+
+[View Presentation Slides](101c%20project%20presentation.pdf)
+
